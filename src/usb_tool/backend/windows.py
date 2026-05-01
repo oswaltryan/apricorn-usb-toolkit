@@ -26,6 +26,30 @@ _TRUTHY_VALUES = {"1", "true", "yes", "on"}
 _FALSY_VALUES = {"0", "false", "no", "off"}
 _DRIVE_REMOVABLE = 2
 _DRIVE_FIXED = 3
+_PCI_USB_CONTROLLER_VENDOR_NAMES = {
+    "8086": "Intel",
+    "1B21": "ASMedia",
+    "1912": "Renesas",
+    "1033": "Renesas",
+    "1022": "AMD",
+    "1B73": "Fresco Logic",
+    "1106": "VIA",
+    "10DE": "NVIDIA",
+    "104C": "Texas Instruments",
+    "106B": "Apple",
+}
+_USB_CONTROLLER_NAME_MARKERS = (
+    ("ASMedia", "ASMedia"),
+    ("Renesas", "Renesas"),
+    ("NEC", "Renesas"),
+    ("Intel", "Intel"),
+    ("AMD", "AMD"),
+    ("Fresco", "Fresco Logic"),
+    ("VIA", "VIA"),
+    ("NVIDIA", "NVIDIA"),
+    ("Texas Instruments", "Texas Instruments"),
+    ("Apple", "Apple"),
+)
 
 
 def _get_usb_module() -> Any | None:
@@ -93,6 +117,20 @@ def _extract_vid_pid(device_id: str) -> tuple[str, str]:
     vid = vid_match.group(1).lower() if vid_match else ""
     pid = pid_match.group(1).lower() if pid_match else ""
     return vid, pid
+
+
+def _classify_usb_controller_name(name: Any = "", device_id: Any = "") -> str:
+    name_text = str(name or "").strip()
+    for marker, label in _USB_CONTROLLER_NAME_MARKERS:
+        if marker.lower() in name_text.lower():
+            return label
+
+    device_text = str(device_id or "")
+    vendor_match = re.search(r"PCI\\VEN_([0-9A-Fa-f]{4})", device_text)
+    if vendor_match:
+        return _PCI_USB_CONTROLLER_VENDOR_NAMES.get(vendor_match.group(1).upper(), "N/A")
+
+    return "N/A"
 
 
 def _is_excluded_pid(pid: str) -> bool:
@@ -405,6 +443,7 @@ class WindowsBackend(AbstractBackend):
             return None
 
         devices = self._native_payload_to_devices(payload)
+        self._correct_native_usb_controllers(devices)
         parse_ms = (time.perf_counter() - parse_start) * 1000.0
         version_query_ms = 0.0
         version_create_file_ms = 0.0
@@ -465,6 +504,32 @@ class WindowsBackend(AbstractBackend):
             _emit_profile_json("windows-native-scan-profile", native_profile_json)
 
         return devices
+
+    def _correct_native_usb_controllers(self, devices: list[UsbDeviceInfo]) -> None:
+        if not devices:
+            return
+        try:
+            self._ensure_wmi_ready()
+            controllers = self._get_usb_controllers_wmi()
+        except Exception:
+            return
+        if not controllers:
+            return
+
+        controller_by_serial: dict[str, str] = {}
+        for controller in controllers:
+            device_id = str(controller.get("DeviceID", "") or "")
+            serial = device_id.rsplit("\\", 1)[-1].strip()
+            name = str(controller.get("ControllerName", "") or "").strip()
+            if serial and name and name != "N/A":
+                controller_by_serial[serial] = name
+
+        for device in devices:
+            for serial in _normalize_serial_candidates(str(getattr(device, "iSerial", "") or "")):
+                controller_name = controller_by_serial.get(serial)
+                if controller_name:
+                    device.usbController = controller_name
+                    break
 
     def _native_payload_to_devices(self, payload: dict[str, Any]) -> list[UsbDeviceInfo]:
         devices: list[UsbDeviceInfo] = []
@@ -1263,8 +1328,9 @@ class WindowsBackend(AbstractBackend):
                         controllers.append(
                             {
                                 "DeviceID": str(dev.DeviceID).upper(),
-                                "ControllerName": (
-                                    ctrl.Name[:5] if ctrl.Name.startswith("Intel") else "ASMedia"
+                                "ControllerName": _classify_usb_controller_name(
+                                    getattr(ctrl, "Name", ""),
+                                    getattr(ctrl, "DeviceID", ""),
                                 ),
                             }
                         )

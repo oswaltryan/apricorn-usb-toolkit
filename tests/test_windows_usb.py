@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 from usb_tool.backend.windows import (
     WindowsBackend,
+    _classify_usb_controller_name,
     _derive_media_type_from_drive_letters,
     _normalize_disk_media_type,
     _normalize_logical_disk_identifier,
@@ -91,6 +92,19 @@ def test_should_retry_scan_detects_partial_lists():
         assert backend._should_retry_scan([0, 1, 1, 0]) is True
         assert backend._should_retry_scan([0, 0, 0, 0]) is False
         assert backend._should_retry_scan([2, 2, 2, 2]) is False
+
+
+def test_classify_usb_controller_name_detects_renesas_from_name_or_pci_vendor():
+    assert (
+        _classify_usb_controller_name("Renesas USB 3.0 eXtensible Host Controller")
+        == "Renesas"
+    )
+    assert _classify_usb_controller_name("USB xHCI Controller", r"PCI\VEN_1912&DEV_0015") == "Renesas"
+    assert _classify_usb_controller_name("USB xHCI Controller", r"PCI\VEN_1B21&DEV_1142") == "ASMedia"
+    assert (
+        _classify_usb_controller_name("USB xHCI Controller", r"PCI\VEN_1B73&DEV_1100")
+        == "Fresco Logic"
+    )
 
 
 def test_find_apricorn_device_retries_once_on_partial_scan():
@@ -747,6 +761,37 @@ def test_native_payload_to_devices_parses_contract_shape(monkeypatch):
     assert serialized["physicalDriveNum"] == 3
     assert serialized["driveLetter"] == "F:"
     assert serialized["fileSystem"] == "NTFS"
+
+
+def test_correct_native_usb_controllers_uses_wmi_controller_relationship():
+    backend = object.__new__(WindowsBackend)
+    backend._ensure_wmi_ready = MagicMock()
+    backend._get_usb_controllers_wmi = MagicMock(
+        return_value=[
+            {
+                "DeviceID": r"USB\VID_0984&PID_0310\101600048177",
+                "ControllerName": "Renesas",
+            }
+        ]
+    )
+    payload = {
+        "devices": [
+            {
+                "1": {
+                    "idVendor": "0984",
+                    "idProduct": "0310",
+                    "iSerial": "101600048177",
+                    "usbController": "ASMedia",
+                }
+            }
+        ]
+    }
+    devices = backend._native_payload_to_devices(payload)
+
+    backend._correct_native_usb_controllers(devices)
+
+    assert len(devices) == 1
+    assert devices[0].usbController == "Renesas"
 
 
 def test_native_payload_to_devices_derives_removable_media_from_drive_letter(monkeypatch):

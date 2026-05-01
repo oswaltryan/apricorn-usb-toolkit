@@ -95,6 +95,39 @@ static double usb_bcd_to_float(USHORT bcd_usb) {
     return (double)major + ((double)minor / 10.0);
 }
 
+static void classify_pci_usb_controller_vendor(const wchar_t* instance_id, char out[32]) {
+    const wchar_t* vendor = NULL;
+    if (instance_id == NULL) {
+        return;
+    }
+
+    vendor = wcsstr(instance_id, L"PCI\\VEN_");
+    if (vendor == NULL) {
+        return;
+    }
+    vendor += 8;
+
+    if (_wcsnicmp(vendor, L"8086", 4) == 0) {
+        StringCchCopyA(out, 32, "Intel");
+    } else if (_wcsnicmp(vendor, L"1B21", 4) == 0) {
+        StringCchCopyA(out, 32, "ASMedia");
+    } else if (_wcsnicmp(vendor, L"1912", 4) == 0 || _wcsnicmp(vendor, L"1033", 4) == 0) {
+        StringCchCopyA(out, 32, "Renesas");
+    } else if (_wcsnicmp(vendor, L"1022", 4) == 0) {
+        StringCchCopyA(out, 32, "AMD");
+    } else if (_wcsnicmp(vendor, L"1B73", 4) == 0) {
+        StringCchCopyA(out, 32, "Fresco Logic");
+    } else if (_wcsnicmp(vendor, L"1106", 4) == 0) {
+        StringCchCopyA(out, 32, "VIA");
+    } else if (_wcsnicmp(vendor, L"10DE", 4) == 0) {
+        StringCchCopyA(out, 32, "NVIDIA");
+    } else if (_wcsnicmp(vendor, L"104C", 4) == 0) {
+        StringCchCopyA(out, 32, "Texas Instruments");
+    } else if (_wcsnicmp(vendor, L"106B", 4) == 0) {
+        StringCchCopyA(out, 32, "Apple");
+    }
+}
+
 void classify_transport(const wchar_t* instance_id, const wchar_t* service, char out[16]) {
     out[0] = '\0';
     if (instance_id != NULL) {
@@ -211,12 +244,8 @@ void classify_usb_controller(DEVINST usb_devinst, char out[32]) {
         if (CM_Get_Device_IDW(cur, instance_id, ARRAYSIZE(instance_id), 0) != CR_SUCCESS) {
             break;
         }
-        if (wcsstr(instance_id, L"PCI\\VEN_8086") != NULL) {
-            StringCchCopyA(out, 32, "Intel");
-            return;
-        }
         if (wcsstr(instance_id, L"PCI\\VEN_") != NULL) {
-            StringCchCopyA(out, 32, "ASMedia");
+            classify_pci_usb_controller_vendor(instance_id, out);
             return;
         }
         if (CM_Get_Parent(&parent, cur, 0) != CR_SUCCESS) {

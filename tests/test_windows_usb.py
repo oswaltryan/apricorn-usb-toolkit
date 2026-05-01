@@ -95,12 +95,13 @@ def test_should_retry_scan_detects_partial_lists():
 
 
 def test_classify_usb_controller_name_detects_renesas_from_name_or_pci_vendor():
+    assert _classify_usb_controller_name("Renesas USB 3.0 eXtensible Host Controller") == "Renesas"
     assert (
-        _classify_usb_controller_name("Renesas USB 3.0 eXtensible Host Controller")
-        == "Renesas"
+        _classify_usb_controller_name("USB xHCI Controller", r"PCI\VEN_1912&DEV_0015") == "Renesas"
     )
-    assert _classify_usb_controller_name("USB xHCI Controller", r"PCI\VEN_1912&DEV_0015") == "Renesas"
-    assert _classify_usb_controller_name("USB xHCI Controller", r"PCI\VEN_1B21&DEV_1142") == "ASMedia"
+    assert (
+        _classify_usb_controller_name("USB xHCI Controller", r"PCI\VEN_1B21&DEV_1142") == "ASMedia"
+    )
     assert (
         _classify_usb_controller_name("USB xHCI Controller", r"PCI\VEN_1B73&DEV_1100")
         == "Fresco Logic"

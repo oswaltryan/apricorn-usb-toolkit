@@ -44,12 +44,13 @@ def main() -> int:
     if platform.system() != "Windows":
         return 0
 
-    if shutil.which("pwsh") is None:
-        print("pwsh not found in PATH", file=sys.stderr)
+    shell = shutil.which("pwsh") or shutil.which("powershell")
+    if shell is None:
+        print("pwsh or powershell not found in PATH", file=sys.stderr)
         return 1
 
     completed = subprocess.run(
-        ["pwsh", "-NoProfile", "-Command", WINDOWS_COMPILE_COMMAND],
+        [shell, "-NoProfile", "-Command", WINDOWS_COMPILE_COMMAND],
         check=False,
     )
     return completed.returncode

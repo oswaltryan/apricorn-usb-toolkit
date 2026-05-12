@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [switch]$SkipPyInstaller
+    [switch]$SkipPyInstaller,
+    [switch]$SuppressIceValidation
 )
 
 $ErrorActionPreference = 'Stop'
@@ -8,6 +9,7 @@ $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Resolve-Path (Join-Path $scriptRoot '..')
 $distDir = Join-Path $repoRoot 'dist'
 $wxsPath = Join-Path $repoRoot 'installers/windows/usb-tool.wxs'
+$licensePath = Join-Path $repoRoot 'installers/windows/license.rtf'
 $intermediateDir = Join-Path $repoRoot 'installers/windows/build'
 $iconPath = Join-Path $repoRoot 'build/USBTool.ico'
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null
@@ -53,6 +55,9 @@ function Find-PyInstallerBinary {
 
 if (-not $SkipPyInstaller) {
     & (Join-Path $repoRoot 'build/build_windows.bat')
+    if ($LASTEXITCODE -ne 0) {
+        throw "PyInstaller build failed with exit code $LASTEXITCODE"
+    }
 }
 
 $usbBinaryPath = Find-PyInstallerBinary
@@ -67,6 +72,9 @@ $wixObj = Join-Path $intermediateDir 'usb-tool.wixobj'
 if (-not (Test-Path $iconPath)) {
     throw "Product icon not found at $iconPath. Ensure the .ico is present before building the MSI."
 }
+if (-not (Test-Path $licensePath)) {
+    throw "Installer license file not found at $licensePath."
+}
 
 try {
     $candle = Get-Command candle.exe -ErrorAction Stop
@@ -79,18 +87,39 @@ catch {
 $productVersionDefine = "-dProductVersion=$msiVersion"
 $binaryDefine = "-dUsbBinary=$stagedBinary"
 $iconDefine = "-dProductIcon=$iconPath"
+$licenseDefine = "-dLicenseRtf=$licensePath"
 
-& $candle.Path -ext WixUtilExtension `
-    $productVersionDefine `
-    $binaryDefine `
-    $iconDefine `
-    -out $wixObj `
+$candleArgs = @(
+    '-ext', 'WixUtilExtension',
+    '-ext', 'WixUIExtension',
+    $productVersionDefine,
+    $binaryDefine,
+    $iconDefine,
+    $licenseDefine,
+    '-out', $wixObj,
     $wxsPath
+)
+
+& $candle.Path @candleArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "WiX candle.exe failed with exit code $LASTEXITCODE"
+}
 
 $msiPath = Join-Path $distDir "apricorn-usb-toolkit-$version-x64.msi"
-& $light.Path -ext WixUtilExtension `
-    $iconDefine `
-    -out $msiPath `
+$lightArgs = @(
+    '-ext', 'WixUtilExtension',
+    '-ext', 'WixUIExtension',
+    $iconDefine,
+    '-out', $msiPath,
     $wixObj
+)
+if ($SuppressIceValidation) {
+    $lightArgs = @('-sval') + $lightArgs
+}
+
+& $light.Path @lightArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "WiX light.exe failed with exit code $LASTEXITCODE"
+}
 
 Write-Host "MSI created at $msiPath"

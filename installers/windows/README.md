@@ -19,10 +19,16 @@ Builds a Windows Installer (`.msi`) that installs the `usb` CLI under `%ProgramF
    ```powershell
    pwsh build\build_windows_msi.ps1
    ```
-   Skip PyInstaller if the executable is already in dist\
+   Skip PyInstaller if the executable is already in `dist\`:
    ```powershell
    pwsh build\build_windows_msi.ps1 -SkipPyInstaller
    ```
+   If WiX ICE validation fails on a local build host because the Windows Installer service is unavailable, you can build a smoke-test MSI without ICE validation:
+   ```powershell
+   pwsh build\build_windows_msi.ps1 -SkipPyInstaller -SuppressIceValidation
+   ```
 3. The resulting `apricorn-usb-toolkit-<version>-x64.msi` is placed in `dist/` ready for distribution.
 
-The MSI installs only the CLI—no shortcuts or Start Menu entries are created. Uninstall via **Settings → Apps → Apricorn USB Toolkit**.
+The MSI supports in-place upgrades through a stable `UpgradeCode`; installing a newer version replaces the existing Apricorn USB Toolkit installation instead of creating a separate product entry. Same-version rebuilds are also treated as upgrades to make signed local rebuilds testable, but release artifacts should still bump the package version.
+
+The CLI is installed as `usb.exe` under `%ProgramFiles%\Apricorn\Apricorn USB Toolkit`, that directory is added to the system `PATH`, and Desktop and Start Menu shortcuts are controlled by installer checkboxes that default to selected and create shortcuts for the user running the installer. Open a new terminal after installing so Windows exposes the updated `PATH` to the shell. Uninstall via **Settings -> Apps -> Apricorn USB Toolkit**.

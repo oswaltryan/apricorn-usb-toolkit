@@ -35,8 +35,8 @@ def _normalize_revision(value: Any) -> str:
 
 
 def should_display_version_fields(device: UsbDeviceInfo) -> bool:
-    drive_size = str(getattr(device, "driveSizeGB", "") or "").strip()
-    if drive_size == "N/A (OOB Mode)":
+    drive_size = str(getattr(device, "driveSizeGB", "") or "").strip().upper()
+    if drive_size.startswith("N/A"):
         return True
 
     scb_part = str(getattr(device, "scbPartNumber", "N/A") or "").strip()

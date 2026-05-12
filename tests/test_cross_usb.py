@@ -76,7 +76,7 @@ def test_handle_list_action_json_output(capfd):
         blockDevice="/dev/disk3",
         driveSizeGB=64,
         iSerial="XYZ123",
-        bridgeFW="1.0",  # Should be popped
+        bridgeFW="1.0",
     )
     cross_usb._handle_list_action([device], json_mode=True)
     captured = capfd.readouterr()
@@ -86,7 +86,7 @@ def test_handle_list_action_json_output(capfd):
     device_entry = payload["devices"][0]["1"]
     assert device_entry["iSerial"] == "XYZ123"
     assert device_entry["deviceMode"] == "Unlocked"
-    assert "bridgeFW" not in device_entry
+    assert device_entry["bridgeFW"] == "1.0"
 
 
 def test_handle_list_action_json_oob_replaces_size_and_drive_letter_with_device_mode(
@@ -258,7 +258,7 @@ def test_handle_list_action_json_keeps_compatibility_fields(capfd, monkeypatch):
     assert "SCSIDevice" not in device_entry
     assert device_entry["diskDriverProvider"] == "Microsoft"
     assert device_entry["busNumber"] == 1
-    assert "bridgeFW" not in device_entry
+    assert device_entry["bridgeFW"] == "1.0"
 
 
 def test_handle_list_action_json_windows_field_order(capfd, monkeypatch):

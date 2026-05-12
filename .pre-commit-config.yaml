@@ -52,7 +52,7 @@ repos:
         always_run: true
     -   id: pytest
         name: pytest
-        entry: uv run --extra dev pytest
+        entry: uv run --extra dev python -m pytest
         language: system
         types: [python]
         pass_filenames: false

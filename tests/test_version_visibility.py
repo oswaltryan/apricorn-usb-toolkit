@@ -88,6 +88,16 @@ def test_should_display_version_fields_keeps_oob_devices_visible():
     )
 
 
+def test_should_display_version_fields_treats_plain_na_size_as_oob():
+    assert should_display_version_fields(
+        _make_device(
+            driveSizeGB="N/A",
+            bridgeFW="040F",
+            bcdDevice="0902",
+        )
+    )
+
+
 def test_prune_hidden_version_fields_keeps_oob_version_placeholders():
     device = _make_device(
         driveSizeGB="N/A (OOB Mode)",
@@ -213,6 +223,47 @@ def test_parse_payload_flips_model_and_hardware_digit_order():
     assert info.hardware_version == "43"
     assert info.mcu_fw == (7, 6, 5)
     assert info.bridge_fw == "0463"
+
+
+def test_illegal_request_invalid_command_sense_is_detected():
+    sense = bytes.fromhex("70 00 05 00 00 00 00 0a 00 00 00 00 20 00 00 00")
+
+    assert device_version._is_illegal_request_invalid_command(sense) is True
+    assert device_version._is_illegal_request_invalid_command(b"\x70\x00\x05") is False
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-specific fallback path")
+def test_query_device_version_falls_back_to_ata_read_buffer_dma(monkeypatch):
+    payload = bytes.fromhex(
+        "0000040f01000000000000000000000000000000000000000000000000000000"
+        "000000000000000000000000000020202032312d3030313032303030363031e0"
+    )
+    sense = bytes.fromhex("70 00 05 00 00 00 00 0a 00 00 00 00 20 00 00 00")
+
+    monkeypatch.setattr(device_version.sys, "platform", "win32")
+
+    def _reject_scsi(*_args, **_kwargs):
+        raise device_version.ScsiReadBufferUnsupportedError(sense)
+
+    monkeypatch.setattr(device_version, "_windows_read_buffer", _reject_scsi)
+    monkeypatch.setattr(
+        device_version, "_windows_ata_read_buffer_dma", lambda *_args, **_kwargs: payload
+    )
+
+    profile = {}
+    info = device_version.query_device_version(
+        0x0984,
+        0x1408,
+        "000000000014",
+        physical_drive_num=1,
+        profile=profile,
+    )
+
+    assert info.raw_data == payload
+    assert info.scb_part_number == "21-0010"
+    assert info.bridge_fw == "040F"
+    assert profile["transport"] == "windows_spti_ata_read_buffer_dma"
+    assert profile["scsi_read_buffer_rejected"] == "illegal_request_invalid_command"
 
 
 def test_linux_scan_hides_version_fields_when_bridge_mismatches_bcd():

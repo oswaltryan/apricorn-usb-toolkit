@@ -16,6 +16,21 @@ def _build_read_buffer_cdb() -> bytes:
     return bytes([0x3C, 0x01, 0x00, 0x00, 0x00, 0x00])
 
 
+def _build_ata_read_buffer_dma_passthrough_cdb() -> bytes:
+    # SCSI ATA PASS-THROUGH(16) carrying ATA READ BUFFER DMA - 0xE9.
+    return bytes([0x85, 0x0C, 0x0E, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0xE9, 0])
+
+
+def _is_illegal_request_invalid_command(sense: bytes) -> bool:
+    return len(sense) >= 14 and sense[2] == 0x05 and sense[12] == 0x20 and sense[13] == 0x00
+
+
+class ScsiReadBufferUnsupportedError(RuntimeError):
+    def __init__(self, sense: bytes) -> None:
+        super().__init__("SCSI READ BUFFER rejected as invalid command operation code")
+        self.sense = sense
+
+
 # --- Windows Logic ---
 if sys.platform == "win32":
     from ctypes import wintypes
@@ -116,11 +131,86 @@ if sys.platform == "win32":
                 profile["device_io_control_ms"] = (time.perf_counter() - ioctl_start) * 1000.0
                 profile["returned_bytes"] = int(returned_bytes.value)
                 profile["scsi_status"] = int(sptd.ScsiStatus)
+                profile["sense_hex"] = bytes(sptd_sense.ucSenseBuf).hex(" ")
             if ok == 0:
                 if profile is not None:
                     profile["ioctl_error"] = ctypes.GetLastError()
                 raise ctypes.WinError(ctypes.GetLastError())
+            sense = bytes(sptd_sense.ucSenseBuf)
+            if sptd.ScsiStatus != 0 and _is_illegal_request_invalid_command(sense):
+                raise ScsiReadBufferUnsupportedError(sense)
             # We return the data buffer regardless of ScsiStatus to support OOB mode
+            return data_buf.raw
+        finally:
+            if h != INVALID_HANDLE_VALUE:
+                ctypes.windll.kernel32.CloseHandle(h)
+
+    def _windows_ata_read_buffer_dma(
+        physical_drive_num: int,
+        timeout_sec: int = 5,
+        profile: dict[str, Any] | None = None,
+    ) -> bytes:
+        drive_path = rf"\\.\PhysicalDrive{physical_drive_num}"
+        h = INVALID_HANDLE_VALUE
+        try:
+            open_start = time.perf_counter()
+            h = ctypes.windll.kernel32.CreateFileW(
+                drive_path,
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                None,
+                OPEN_EXISTING,
+                0,
+                None,
+            )
+            if profile is not None:
+                profile["ata_drive_path"] = drive_path
+                profile["ata_create_file_ms"] = (time.perf_counter() - open_start) * 1000.0
+            if h == INVALID_HANDLE_VALUE:
+                win_error = ctypes.GetLastError()
+                if profile is not None:
+                    profile["ata_open_error"] = win_error
+                if win_error == errno.EACCES:
+                    raise PermissionError("Administrator privileges required")
+                raise ctypes.WinError(win_error)
+
+            cdb = _build_ata_read_buffer_dma_passthrough_cdb()
+            data_len = 512
+            data_buf = ctypes.create_string_buffer(data_len)
+            sptd_sense = SPTD_WITH_SENSE()
+            ctypes.memset(ctypes.byref(sptd_sense), 0, ctypes.sizeof(sptd_sense))
+            sptd = sptd_sense.sptd
+            sptd.Length = ctypes.sizeof(SCSI_PASS_THROUGH_DIRECT)
+            sptd.CdbLength = len(cdb)
+            sptd.SenseInfoLength = len(sptd_sense.ucSenseBuf)
+            sptd.DataIn = 1
+            sptd.DataTransferLength = data_len
+            sptd.TimeOutValue = int(timeout_sec)
+            sptd.DataBuffer = ctypes.cast(ctypes.pointer(data_buf), ctypes.c_void_p)
+            sptd.SenseInfoOffset = sptd.Length
+            ctypes.memmove(sptd.Cdb, (ctypes.c_ubyte * len(cdb))(*cdb), len(cdb))
+
+            returned_bytes = wintypes.DWORD(0)
+            ioctl_start = time.perf_counter()
+            ok = ctypes.windll.kernel32.DeviceIoControl(
+                h,
+                IOCTL_SCSI_PASS_THROUGH_DIRECT,
+                ctypes.byref(sptd_sense),
+                ctypes.sizeof(sptd_sense),
+                ctypes.byref(sptd_sense),
+                ctypes.sizeof(sptd_sense),
+                ctypes.byref(returned_bytes),
+                None,
+            )
+            if profile is not None:
+                profile["ata_device_io_control_ms"] = (time.perf_counter() - ioctl_start) * 1000.0
+                profile["ata_returned_bytes"] = int(returned_bytes.value)
+                profile["ata_scsi_status"] = int(sptd.ScsiStatus)
+                profile["ata_sense_hex"] = bytes(sptd_sense.ucSenseBuf).hex(" ")
+            if ok == 0:
+                if profile is not None:
+                    profile["ata_ioctl_error"] = ctypes.GetLastError()
+                raise ctypes.WinError(ctypes.GetLastError())
             return data_buf.raw
         finally:
             if h != INVALID_HANDLE_VALUE:
@@ -320,6 +410,14 @@ def query_device_version(
         try:
             timings["transport"] = "windows_spti"
             data = _windows_read_buffer(physical_drive_num, profile=timings)
+        except ScsiReadBufferUnsupportedError as exc:
+            timings["scsi_read_buffer_rejected"] = "illegal_request_invalid_command"
+            timings["scsi_read_buffer_sense_hex"] = exc.sense.hex(" ")
+            try:
+                timings["transport"] = "windows_spti_ata_read_buffer_dma"
+                data = _windows_ata_read_buffer_dma(physical_drive_num, profile=timings)
+            except Exception:
+                data = b""
         except Exception:
             # Fallback or just empty
             data = b""

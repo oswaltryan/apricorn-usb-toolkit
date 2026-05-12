@@ -326,7 +326,6 @@ def _order_windows_output_fields(device_dict: dict[str, Any]) -> dict[str, Any]:
 
 def _filter_json_fields(device_dict: dict[str, Any]) -> dict[str, Any]:
     filtered = dict(device_dict)
-    filtered.pop("bridgeFW", None)
     _apply_device_mode_output_fields(filtered)
 
     if _SYSTEM.startswith("win"):

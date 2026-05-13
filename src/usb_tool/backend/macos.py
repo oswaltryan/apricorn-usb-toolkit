@@ -75,6 +75,47 @@ def _fallback_media_type(pid: str, product_name: str) -> str:
     return "Unknown"
 
 
+def _parse_media_size_bytes(media: dict[str, Any]) -> int | float | None:
+    size_in_bytes = media.get("size_in_bytes")
+    if isinstance(size_in_bytes, (int, float)) and not isinstance(size_in_bytes, bool):
+        return size_in_bytes
+
+    size_text = str(media.get("size", "")).strip()
+    if not size_text:
+        return None
+
+    match = re.fullmatch(
+        r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*([KMGTPE]?i?B|bytes?)(?:\s*\([^)]*\))?",
+        size_text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+
+    value = float(match.group(1).replace(",", ""))
+    unit = match.group(2).lower()
+    multipliers = {
+        "byte": 1,
+        "bytes": 1,
+        "kb": 1000,
+        "kib": 1024,
+        "mb": 1000**2,
+        "mib": 1024**2,
+        "gb": 1000**3,
+        "gib": 1024**3,
+        "tb": 1000**4,
+        "tib": 1024**4,
+        "pb": 1000**5,
+        "pib": 1024**5,
+        "eb": 1000**6,
+        "eib": 1024**6,
+    }
+    multiplier = multipliers.get(unit)
+    if multiplier is None:
+        return None
+    return value * multiplier
+
+
 def _classify_mass_storage_protocol(protocol_value: Any) -> str:
     try:
         protocol = int(str(protocol_value).strip(), 0)
@@ -179,10 +220,15 @@ class MacOSBackend(AbstractBackend):
                 media_type = _classify_media_type(m.get("removable_media"))
                 bsd_name = m.get("bsd_name", "")
                 block_device = _normalize_whole_disk_path(bsd_name)
-                if is_oob_mode_size_bytes(m.get("size_in_bytes", 0)):
+                media_size_bytes = _parse_media_size_bytes(m)
+                if (
+                    media_size_bytes is None
+                    or media_size_bytes <= 0
+                    or is_oob_mode_size_bytes(media_size_bytes)
+                ):
                     size_gb = "N/A (OOB Mode)"
                 else:
-                    size_raw = bytes_to_gb(m.get("size_in_bytes", 0))
+                    size_raw = bytes_to_gb(media_size_bytes)
                     closest = find_closest(size_raw, closest_values.get(pid, (0, []))[1])
                     size_gb = str(closest) if closest is not None else "0"
             else:
@@ -218,6 +264,8 @@ class MacOSBackend(AbstractBackend):
                     pid,
                     serial,
                     block_device or bsd_name,
+                    size_gb,
+                    profile_scan,
                 )
                 version_query_ms += version_info.pop("_profile_ms", 0.0)
             else:
@@ -295,15 +343,39 @@ class MacOSBackend(AbstractBackend):
         pid: str,
         serial: str,
         device_path: str,
+        size_gb: str,
+        profile_scan: bool = False,
     ) -> dict[str, Any]:
         start = time.perf_counter()
+        profile: dict[str, Any] = {}
         version_info = populate_device_version(
             int(vid, 16),
             int(pid, 16),
             serial,
             bsd_name=device_path,
+            profile=profile,
         )
-        version_info["_profile_ms"] = (time.perf_counter() - start) * 1000.0
+        profile_ms = (time.perf_counter() - start) * 1000.0
+        version_info["_profile_ms"] = profile_ms
+        _emit_profile_event(
+            profile_scan,
+            "macos-version-profile",
+            block_device=device_path,
+            size_mode=("oob" if str(size_gb).strip() == "N/A (OOB Mode)" else "mounted_media"),
+            serial=serial or "unknown",
+            duration_ms=f"{profile_ms:.2f}",
+            transport=profile.get("transport", "unknown"),
+            payload_len=profile.get("payload_len", "unknown"),
+            parsed_scb_part_number=profile.get("parsed_scb_part_number", "N/A"),
+            parsed_bridge_fw=profile.get("parsed_bridge_fw", "N/A"),
+            read_buffer_empty=profile.get("usb_core_read_buffer_empty", ""),
+            read_buffer_error=profile.get("usb_core_read_buffer_error", ""),
+            read_buffer_stage=profile.get("usb_core_read_buffer_error_stage", ""),
+            ata_error=profile.get("usb_core_ata_read_buffer_error", ""),
+            ata_stage=profile.get("usb_core_ata_read_buffer_error_stage", ""),
+            reclaimed_before_ata=profile.get("usb_core_reclaimed_before_ata", ""),
+            usb_core_error=profile.get("usb_core_error", ""),
+        )
         return version_info
 
     def _should_probe_version_info(self, size_gb: str, block_device: str) -> bool:

@@ -9,7 +9,7 @@ resolution-markers = [
 
 [[package]]
 name = "apricorn-usb-toolkit"
-version = "1.5.22"
+version = "1.5.23"
 source = { editable = "." }
 dependencies = [
     { name = "libusb", marker = "sys_platform == 'win32'" },

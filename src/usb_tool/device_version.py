@@ -368,8 +368,15 @@ class DeviceVersionInfo:
 
 
 def _query_usb_core(
-    vendor_id: int, product_id: int, serial_number: str, bsd_name: str | None = None
+    vendor_id: int,
+    product_id: int,
+    serial_number: str,
+    bsd_name: str | None = None,
+    profile: dict[str, Any] | None = None,
 ) -> bytes:
+    if profile is not None:
+        profile["transport"] = "usb_core"
+
     # Ensure usb modules are available
     try:
         import usb.core
@@ -377,6 +384,8 @@ def _query_usb_core(
     except ImportError:
         # If pyusb isn't available, we can't use this method.
         # This is expected on minimized Windows builds.
+        if profile is not None:
+            profile["usb_core_error"] = "ImportError"
         return b""
 
     if sys.platform == "darwin" and bsd_name:
@@ -389,22 +398,33 @@ def _query_usb_core(
         except Exception:
             pass
 
-    dev = usb.core.find(idVendor=vendor_id, idProduct=product_id, serial_number=serial_number)
-    if dev is None:
-        dev = usb.core.find(idVendor=vendor_id, idProduct=product_id)
+    def _find_device() -> Any:
+        found = usb.core.find(idVendor=vendor_id, idProduct=product_id, serial_number=serial_number)
+        if found is None:
+            found = usb.core.find(idVendor=vendor_id, idProduct=product_id)
 
-    if dev is None:
-        raise ValueError("Device not found")
+        if found is None:
+            if profile is not None:
+                profile["usb_core_device_found"] = False
+            raise ValueError("Device not found")
+        if profile is not None:
+            profile["usb_core_device_found"] = True
+        return found
 
+    dev = _find_device()
     intf = None
+    ep_out = None
+    ep_in = None
     data = b""
-    try:
-        if dev.is_kernel_driver_active(0):
-            dev.detach_kernel_driver(0)
-    except Exception:
-        pass
 
-    try:
+    def _claim_interface() -> None:
+        nonlocal intf, ep_out, ep_in
+        try:
+            if dev.is_kernel_driver_active(0):
+                dev.detach_kernel_driver(0)
+        except Exception:
+            pass
+
         dev.set_configuration()
         cfg = dev.get_active_configuration()
         intf = cfg[(0, 0)]
@@ -425,40 +445,121 @@ def _query_usb_core(
         if ep_out is None or ep_in is None:
             raise ValueError("Could not find IN and OUT endpoints")
 
-        tag = 0x12345678
-        data_len = 1024
-        cbw = bytearray(31)
-        cbw[0:4] = b"USBC"
-        cbw[4:8] = tag.to_bytes(4, "little")
-        cbw[8:12] = data_len.to_bytes(4, "little")
-        cbw[12] = 0x80  # IN
-        cbw[14] = 6  # CDB length
-        # Using the same CDB construction
-        cbw[15:21] = bytes([0x3C, 0x01, 0x00, 0x00, 0x00, 0x00])
-
-        try:
-            ep_out.write(cbw)
-        except usb.core.USBError:
-            return b""
-
-        try:
-            response_data = ep_in.read(data_len, timeout=5000)
-        except usb.core.USBError:
-            response_data = b""
-
-        try:
-            ep_in.read(13, timeout=5000)
-        except usb.core.USBError:
-            pass
-
-        data = response_data.tobytes() if hasattr(response_data, "tobytes") else b""
-    finally:
+    def _release_interface() -> None:
+        nonlocal intf
         if intf is not None:
             usb.util.release_interface(dev, intf)
+            intf = None
         try:
             dev.attach_kernel_driver(0)
         except Exception:
             pass
+
+    try:
+        _claim_interface()
+
+        def _recover_bot_transport() -> None:
+            if ep_in is None or ep_out is None:
+                raise ValueError("Could not find IN and OUT endpoints")
+
+            interface_number = getattr(intf, "bInterfaceNumber", 0)
+            try:
+                # Bulk-Only Mass Storage Reset before reusing endpoints after a failed command.
+                dev.ctrl_transfer(0x21, 0xFF, 0, interface_number, None, timeout=1000)
+            except Exception:
+                pass
+            for ep in (ep_in, ep_out):
+                try:
+                    usb.util.clear_halt(dev, ep.bEndpointAddress)
+                except Exception:
+                    pass
+
+        def _record_usb_error(prefix: str, stage: str, exc: BaseException) -> None:
+            if profile is None:
+                return
+            profile[f"{prefix}_error"] = type(exc).__name__
+            profile[f"{prefix}_error_stage"] = stage
+            message = str(exc)
+            if message:
+                profile[f"{prefix}_error_message"] = message
+            for attr in ("errno", "backend_error_code", "backend_error"):
+                value = getattr(exc, attr, None)
+                if value is not None:
+                    profile[f"{prefix}_{attr}"] = value
+
+        def _send_bot_command(cdb: bytes, data_len: int, tag: int, profile_prefix: str) -> bytes:
+            if ep_in is None or ep_out is None:
+                raise ValueError("Could not find IN and OUT endpoints")
+
+            cbw = bytearray(31)
+            cbw[0:4] = b"USBC"
+            cbw[4:8] = tag.to_bytes(4, "little")
+            cbw[8:12] = data_len.to_bytes(4, "little")
+            cbw[12] = 0x80  # IN
+            cbw[14] = len(cdb)
+            cbw[15 : 15 + len(cdb)] = cdb
+
+            if profile is not None:
+                profile[f"{profile_prefix}_cdb_hex"] = cdb.hex(" ")
+
+            try:
+                ep_out.write(cbw)
+            except usb.core.USBError as exc:
+                _record_usb_error(profile_prefix, "cbw_write", exc)
+                raise
+
+            try:
+                response = ep_in.read(data_len, timeout=5000)
+            except usb.core.USBError as exc:
+                _record_usb_error(profile_prefix, "data_read", exc)
+                response = b""
+
+            try:
+                ep_in.read(13, timeout=5000)
+            except usb.core.USBError as exc:
+                _record_usb_error(profile_prefix, "csw_read", exc)
+                pass
+
+            return response.tobytes() if hasattr(response, "tobytes") else bytes(response)
+
+        data_len = 1024
+        try:
+            data = _send_bot_command(
+                _build_read_buffer_10_cdb(data_len),
+                data_len,
+                0x12345678,
+                "usb_core_read_buffer",
+            )
+        except usb.core.USBError as exc:
+            if profile is not None:
+                profile["usb_core_read_buffer_error"] = type(exc).__name__
+            data = b""
+
+        if not data:
+            try:
+                if profile is not None:
+                    profile["transport"] = "usb_core_ata_read_buffer_dma"
+                    profile["usb_core_read_buffer_empty"] = True
+                    profile["usb_core_bot_recovery_before_ata"] = True
+                _recover_bot_transport()
+                _release_interface()
+                time.sleep(0.2)
+                dev = _find_device()
+                _claim_interface()
+                if profile is not None:
+                    profile["usb_core_reclaimed_before_ata"] = True
+                data = _send_bot_command(
+                    _build_ata_read_buffer_dma_passthrough_cdb(),
+                    512,
+                    0x12345679,
+                    "usb_core_ata_read_buffer",
+                )
+            except usb.core.USBError as exc:
+                if profile is not None:
+                    profile["usb_core_ata_read_buffer_error"] = type(exc).__name__
+                data = b""
+    finally:
+        _release_interface()
 
     # Remount on macOS if we unmounted it
     if sys.platform == "darwin" and bsd_name:
@@ -509,8 +610,10 @@ def query_device_version(
     else:
         # Fallback to libusb (macOS/Linux)
         try:
-            data = _query_usb_core(vendor_id, product_id, serial_number, bsd_name)
-        except Exception:
+            data = _query_usb_core(vendor_id, product_id, serial_number, bsd_name, profile=timings)
+        except Exception as exc:
+            timings["usb_core_error"] = type(exc).__name__
+            timings["usb_core_error_message"] = str(exc)
             data = b""
 
     parse_start = time.perf_counter()

@@ -1,4 +1,5 @@
 import sys
+import types
 from unittest.mock import patch
 
 import pytest
@@ -303,6 +304,90 @@ def test_query_device_version_falls_back_to_linux_ata_read_buffer_dma(monkeypatc
     assert len(calls[1]) == 16
     assert profile["transport"] == "linux_sg_io_ata_read_buffer_dma"
     assert profile["linux_read_buffer_rejected"] == "illegal_request_invalid_command"
+
+
+def test_query_device_version_falls_back_to_libusb_ata_read_buffer_dma(monkeypatch):
+    payload = bytes.fromhex(
+        "0000040f01000000000000000000000000000000000000000000000000000000"
+        "000000000000000000000000000020202032312d3030313032303030363031e0"
+    )
+    writes = []
+    resets = []
+    cleared_halts = []
+
+    class FakeUSBError(Exception):
+        pass
+
+    class FakeEndpoint:
+        def __init__(self, address, reads=None):
+            self.bEndpointAddress = address
+            self._reads = list(reads or [])
+
+        def write(self, data):
+            writes.append(bytes(data))
+
+        def read(self, *_args, **_kwargs):
+            if self._reads:
+                return self._reads.pop(0)
+            return b""
+
+    ep_out = FakeEndpoint(0x01)
+    ep_in = FakeEndpoint(0x81, reads=[b"", b"\x00" * 13, payload, b"\x00" * 13])
+
+    class FakeDevice:
+        def is_kernel_driver_active(self, *_args):
+            return False
+
+        def set_configuration(self):
+            pass
+
+        def get_active_configuration(self):
+            return {(0, 0): [ep_out, ep_in]}
+
+        def ctrl_transfer(self, *args, **kwargs):
+            resets.append((args, kwargs))
+
+        def attach_kernel_driver(self, *_args):
+            pass
+
+    usb_pkg = types.ModuleType("usb")
+    core_mod = types.ModuleType("usb.core")
+    util_mod = types.ModuleType("usb.util")
+    core_mod.USBError = FakeUSBError
+    core_mod.find = lambda **_kwargs: FakeDevice()
+    util_mod.ENDPOINT_OUT = 0
+    util_mod.ENDPOINT_IN = 0x80
+    util_mod.endpoint_direction = lambda address: address & 0x80
+    util_mod.find_descriptor = lambda intf, custom_match: next(
+        endpoint for endpoint in intf if custom_match(endpoint)
+    )
+    util_mod.release_interface = lambda *_args: None
+    util_mod.clear_halt = lambda _dev, endpoint_address: cleared_halts.append(endpoint_address)
+    usb_pkg.core = core_mod
+    usb_pkg.util = util_mod
+    monkeypatch.setitem(sys.modules, "usb", usb_pkg)
+    monkeypatch.setitem(sys.modules, "usb.core", core_mod)
+    monkeypatch.setitem(sys.modules, "usb.util", util_mod)
+    monkeypatch.setattr(device_version.sys, "platform", "darwin")
+
+    profile = {}
+    info = device_version.query_device_version(
+        0x0984,
+        0x1408,
+        "000000000014",
+        profile=profile,
+    )
+
+    assert info.raw_data == payload
+    assert info.scb_part_number == "21-0010"
+    assert info.bridge_fw == "040F"
+    assert writes[0][15:25] == device_version._build_read_buffer_10_cdb(1024)
+    assert writes[1][15:31] == device_version._build_ata_read_buffer_dma_passthrough_cdb()
+    assert resets
+    assert cleared_halts == [ep_in.bEndpointAddress, ep_out.bEndpointAddress]
+    assert profile["transport"] == "usb_core_ata_read_buffer_dma"
+    assert profile["usb_core_read_buffer_empty"] is True
+    assert profile["usb_core_bot_recovery_before_ata"] is True
 
 
 def test_linux_scan_hides_version_fields_when_bridge_mismatches_bcd():

@@ -1549,9 +1549,7 @@ class WindowsBackend(AbstractBackend):
             size_raw = wmi_usb_drives[i]["size_gb"]
             is_oob_size = size_raw == 0.0 or is_oob_mode_size_gb(size_raw)
             size_gb = (
-                "N/A (OOB Mode)"
-                if is_oob_size
-                else find_closest(size_raw, closest_values[pid][1])
+                "N/A (OOB Mode)" if is_oob_size else find_closest(size_raw, closest_values[pid][1])
             )
             drive_letter = "Not Formatted"
             media_type = _normalize_disk_media_type(wmi_usb_drives[i].get("mediaType", "Unknown"))

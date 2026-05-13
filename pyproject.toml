@@ -13,7 +13,7 @@ build-backend = "setuptools.build_meta"
 [project]
 # Package metadata
 name = "apricorn-usb-toolkit"
-version = "1.5.21"
+version = "1.5.22"
 description = "Apricorn USB Toolkit: cross-platform CLI and Python library for Apricorn devices"
 readme = "README.md"
 requires-python = ">=3.10"

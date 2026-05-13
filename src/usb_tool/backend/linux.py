@@ -440,8 +440,7 @@ class LinuxBackend(AbstractBackend):
                 "idVendor": vid,
                 "idProduct": pid,
                 "bcdUSB": self._read_sysfs_text(os.path.join(candidate, "version")) or "0",
-                "bcdDevice": self._read_sysfs_text(os.path.join(candidate, "bcdDevice"))
-                or "0000",
+                "bcdDevice": self._read_sysfs_text(os.path.join(candidate, "bcdDevice")) or "0000",
                 "iManufacturer": self._read_sysfs_text(os.path.join(candidate, "manufacturer"))
                 or "Apricorn",
                 "iProduct": self._read_sysfs_text(os.path.join(candidate, "product")) or "Unknown",

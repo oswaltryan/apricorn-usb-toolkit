@@ -266,6 +266,7 @@ def test_query_device_version_falls_back_to_ata_read_buffer_dma(monkeypatch):
     assert profile["scsi_read_buffer_rejected"] == "illegal_request_invalid_command"
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux-specific fallback path")
 def test_query_device_version_falls_back_to_linux_ata_read_buffer_dma(monkeypatch):
     payload = bytes.fromhex(
         "0000040f01000000000000000000000000000000000000000000000000000000"

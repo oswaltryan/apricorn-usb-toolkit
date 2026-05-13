@@ -16,7 +16,7 @@ from ..models import UsbDeviceInfo
 
 # For Phase 3/4, still import from legacy if not moved
 from ..services import populate_device_version, prune_hidden_version_fields
-from ..utils import bytes_to_gb, find_closest
+from ..utils import bytes_to_gb, find_closest, is_oob_mode_size_gb
 from .base import AbstractBackend
 
 
@@ -121,6 +121,8 @@ class LinuxBackend(AbstractBackend):
 
             lsusb_info = lsusb_details.get(serial)
             if not lsusb_info:
+                lsusb_info = self._get_sysfs_usb_details(block_path)
+            if not lsusb_info:
                 continue
 
             vid = lsusb_info.get("idVendor", "").lower()
@@ -144,7 +146,7 @@ class LinuxBackend(AbstractBackend):
 
             size_raw = lsblk_info.get("size_gb", 0.0)
             size_gb = "N/A (OOB Mode)"
-            if size_raw > 0:
+            if size_raw > 0 and not is_oob_mode_size_gb(size_raw):
                 opts = (
                     closest_values.get(pid, (None, []))[1]
                     or closest_values.get(bcd_dev, (None, []))[1]
@@ -241,21 +243,34 @@ class LinuxBackend(AbstractBackend):
         size_gb: str,
     ) -> dict[str, Any]:
         start = time.perf_counter()
+        profile: dict[str, Any] = {}
         version_info = populate_device_version(
             int(vid, 16),
             int(pid, 16),
             serial,
             device_path=block_path,
+            profile=profile,
         )
         profile_ms = (time.perf_counter() - start) * 1000.0
         version_info["_profile_ms"] = profile_ms
         _emit_profile_event(
-            getattr(self, "_profile_helper_events_enabled", False),
+            getattr(self, "_profile_scan_enabled", False),
             "linux-version-profile",
             block_device=block_path,
             size_mode=("oob" if str(size_gb).strip() == "N/A (OOB Mode)" else "mounted_media"),
             serial=serial or "unknown",
             duration_ms=f"{profile_ms:.2f}",
+            transport=profile.get("transport", "unknown"),
+            payload_len=profile.get("payload_len", "unknown"),
+            parsed_scb_part_number=profile.get("parsed_scb_part_number", "N/A"),
+            parsed_bridge_fw=profile.get("parsed_bridge_fw", "N/A"),
+            status=profile.get("linux_status", "unknown"),
+            resid=profile.get("linux_resid", "unknown"),
+            sense=profile.get("linux_sense_hex", "unknown"),
+            ata_status=profile.get("linux_ata_status", "unknown"),
+            ata_resid=profile.get("linux_ata_resid", "unknown"),
+            ata_sense=profile.get("linux_ata_sense_hex", "unknown"),
+            error=profile.get("linux_error", ""),
         )
         return version_info
 
@@ -403,6 +418,37 @@ class LinuxBackend(AbstractBackend):
             if serial:
                 return serial
         return ""
+
+    def _get_sysfs_usb_details(self, block_device: str) -> dict[str, str]:
+        sysfs_path = self._get_block_device_sysfs_path(block_device)
+        if not sysfs_path:
+            return {}
+
+        for candidate in self._iter_sysfs_ancestors(sysfs_path):
+            if self._read_sysfs_link_name(os.path.join(candidate, "subsystem")) != "usb":
+                continue
+
+            vid = self._read_sysfs_text(os.path.join(candidate, "idVendor")).lower()
+            pid = _normalize_pid(self._read_sysfs_text(os.path.join(candidate, "idProduct")))
+            serial = _normalize_linux_serial(
+                self._read_sysfs_text(os.path.join(candidate, "serial"))
+            )
+            if not vid or not pid or not serial:
+                continue
+
+            return {
+                "idVendor": vid,
+                "idProduct": pid,
+                "bcdUSB": self._read_sysfs_text(os.path.join(candidate, "version")) or "0",
+                "bcdDevice": self._read_sysfs_text(os.path.join(candidate, "bcdDevice"))
+                or "0000",
+                "iManufacturer": self._read_sysfs_text(os.path.join(candidate, "manufacturer"))
+                or "Apricorn",
+                "iProduct": self._read_sysfs_text(os.path.join(candidate, "product")) or "Unknown",
+                "iSerial": serial,
+            }
+
+        return {}
 
     def _list_usb_drives(self):
         cmd = [

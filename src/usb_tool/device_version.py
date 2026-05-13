@@ -16,8 +16,27 @@ def _build_read_buffer_cdb() -> bytes:
     return bytes([0x3C, 0x01, 0x00, 0x00, 0x00, 0x00])
 
 
+def _build_read_buffer_10_cdb(allocation_length: int) -> bytes:
+    # READ BUFFER (10) - 0x3C
+    length = max(0, min(int(allocation_length), 0xFFFFFF))
+    return bytes(
+        [
+            0x3C,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            (length >> 16) & 0xFF,
+            (length >> 8) & 0xFF,
+            length & 0xFF,
+            0x00,
+        ]
+    )
+
+
 def _build_ata_read_buffer_dma_passthrough_cdb() -> bytes:
-    # SCSI ATA PASS-THROUGH(16) carrying ATA READ BUFFER DMA - 0xE9.
+    # SCSI ATA PASS-THROUGH(16) carrying ATA READ BUFFER DMA.
     return bytes(
         [0x85, 0x15, 0x0E, 0x0, 0x20, 0x0, 0x01, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xE0, 0xFE, 0x0]
     )
@@ -251,32 +270,88 @@ if sys.platform.startswith("linux"):
             ("info", ctypes.c_uint),
         ]
 
-    def _linux_read_buffer(device_path: str, timeout_sec: int = 5) -> bytes:
+    def _linux_sg_io_read(
+        fd: int,
+        cdb_bytes: bytes,
+        data_len: int,
+        timeout_sec: int,
+        profile: dict[str, Any] | None,
+        prefix: str,
+    ) -> bytes:
+        cdb = ctypes.create_string_buffer(cdb_bytes, len(cdb_bytes))
+        data_buf = ctypes.create_string_buffer(data_len)
+        sense_buf = ctypes.create_string_buffer(32)
+
+        sg_io = SG_IO_HDR()
+        ctypes.memset(ctypes.byref(sg_io), 0, ctypes.sizeof(sg_io))
+        sg_io.interface_id = ord("S")
+        sg_io.dxfer_direction = SG_DXFER_FROM_DEV
+        sg_io.cmd_len = len(cdb_bytes)
+        sg_io.mx_sb_len = ctypes.sizeof(sense_buf)
+        sg_io.dxfer_len = data_len
+        sg_io.dxferp = ctypes.cast(data_buf, ctypes.c_void_p)
+        sg_io.cmdp = ctypes.cast(cdb, ctypes.c_void_p)
+        sg_io.sbp = ctypes.cast(sense_buf, ctypes.c_void_p)
+        sg_io.timeout = int(timeout_sec * 1000)
+
+        ioctl_start = time.perf_counter()
+        fcntl.ioctl(fd, SG_IO, sg_io)
+        if profile is not None:
+            profile[f"{prefix}_sg_io_ms"] = (time.perf_counter() - ioctl_start) * 1000.0
+            profile[f"{prefix}_cdb_hex"] = cdb_bytes.hex(" ")
+            profile[f"{prefix}_status"] = int(sg_io.status)
+            profile[f"{prefix}_masked_status"] = int(sg_io.masked_status)
+            profile[f"{prefix}_msg_status"] = int(sg_io.msg_status)
+            profile[f"{prefix}_sb_len_wr"] = int(sg_io.sb_len_wr)
+            profile[f"{prefix}_host_status"] = int(sg_io.host_status)
+            profile[f"{prefix}_driver_status"] = int(sg_io.driver_status)
+            profile[f"{prefix}_resid"] = int(sg_io.resid)
+            profile[f"{prefix}_duration"] = int(sg_io.duration)
+            profile[f"{prefix}_info"] = int(sg_io.info)
+            profile[f"{prefix}_sense_hex"] = sense_buf.raw[: sg_io.sb_len_wr or 32].hex(" ")
+
+        sense = sense_buf.raw[: sg_io.sb_len_wr or 32]
+        if sg_io.status != 0 and _is_illegal_request_invalid_command(sense):
+            raise ScsiReadBufferUnsupportedError(sense)
+        actual_len = max(0, data_len - max(sg_io.resid, 0))
+        return data_buf.raw[:actual_len]
+
+    def _linux_read_buffer(
+        device_path: str,
+        timeout_sec: int = 5,
+        profile: dict[str, Any] | None = None,
+    ) -> bytes:
         fd = -1
         try:
+            open_start = time.perf_counter()
             fd = os.open(device_path, os.O_RDONLY)
+            if profile is not None:
+                profile["linux_device_path"] = device_path
+                profile["linux_open_ms"] = (time.perf_counter() - open_start) * 1000.0
 
-            cdb_bytes = _build_read_buffer_cdb()
-            cdb = ctypes.create_string_buffer(cdb_bytes, len(cdb_bytes))
             data_len = 1024
-            data_buf = ctypes.create_string_buffer(data_len)
-            sense_buf = ctypes.create_string_buffer(32)
-
-            sg_io = SG_IO_HDR()
-            ctypes.memset(ctypes.byref(sg_io), 0, ctypes.sizeof(sg_io))
-            sg_io.interface_id = ord("S")
-            sg_io.dxfer_direction = SG_DXFER_FROM_DEV
-            sg_io.cmd_len = len(cdb_bytes)
-            sg_io.mx_sb_len = ctypes.sizeof(sense_buf)
-            sg_io.dxfer_len = data_len
-            sg_io.dxferp = ctypes.cast(data_buf, ctypes.c_void_p)
-            sg_io.cmdp = ctypes.cast(cdb, ctypes.c_void_p)
-            sg_io.sbp = ctypes.cast(sense_buf, ctypes.c_void_p)
-            sg_io.timeout = int(timeout_sec * 1000)
-
-            fcntl.ioctl(fd, SG_IO, sg_io)
-            actual_len = max(0, data_len - max(sg_io.resid, 0))
-            return data_buf.raw[:actual_len]
+            try:
+                return _linux_sg_io_read(
+                    fd,
+                    _build_read_buffer_10_cdb(data_len),
+                    data_len,
+                    timeout_sec,
+                    profile,
+                    "linux",
+                )
+            except ScsiReadBufferUnsupportedError as exc:
+                if profile is not None:
+                    profile["transport"] = "linux_sg_io_ata_read_buffer_dma"
+                    profile["linux_read_buffer_rejected"] = "illegal_request_invalid_command"
+                    profile["linux_read_buffer_sense_hex"] = exc.sense.hex(" ")
+                return _linux_sg_io_read(
+                    fd,
+                    _build_ata_read_buffer_dma_passthrough_cdb(),
+                    512,
+                    timeout_sec,
+                    profile,
+                    "linux_ata",
+                )
         finally:
             if fd >= 0:
                 os.close(fd)
@@ -425,8 +500,11 @@ def query_device_version(
             data = b""
     elif sys.platform.startswith("linux") and device_path:
         try:
-            data = _linux_read_buffer(device_path)
-        except Exception:
+            timings["transport"] = "linux_sg_io"
+            data = _linux_read_buffer(device_path, profile=timings)
+        except Exception as exc:
+            timings["linux_error"] = type(exc).__name__
+            timings["linux_error_message"] = str(exc)
             data = b""
     else:
         # Fallback to libusb (macOS/Linux)

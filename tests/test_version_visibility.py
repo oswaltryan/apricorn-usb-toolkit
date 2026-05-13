@@ -191,7 +191,7 @@ def test_query_device_version_uses_linux_sg_io(monkeypatch):
     monkeypatch.setattr(
         device_version,
         "_linux_read_buffer",
-        lambda path: payload,
+        lambda path, **_kwargs: payload,
         raising=False,
     )
 
@@ -264,6 +264,44 @@ def test_query_device_version_falls_back_to_ata_read_buffer_dma(monkeypatch):
     assert info.bridge_fw == "040F"
     assert profile["transport"] == "windows_spti_ata_read_buffer_dma"
     assert profile["scsi_read_buffer_rejected"] == "illegal_request_invalid_command"
+
+
+def test_query_device_version_falls_back_to_linux_ata_read_buffer_dma(monkeypatch):
+    payload = bytes.fromhex(
+        "0000040f01000000000000000000000000000000000000000000000000000000"
+        "000000000000000000000000000020202032312d3030313032303030363031e0"
+    )
+    sense = bytes.fromhex("70 00 05 00 00 00 00 0a 00 00 00 00 20 00 00 00")
+    calls = []
+
+    monkeypatch.setattr(device_version.sys, "platform", "linux")
+    monkeypatch.setattr(device_version.os, "open", lambda *_args, **_kwargs: 3)
+    monkeypatch.setattr(device_version.os, "close", lambda *_args, **_kwargs: None)
+
+    def _fake_sg_io_read(_fd, cdb, *_args, **_kwargs):
+        calls.append(cdb)
+        if len(calls) == 1:
+            raise device_version.ScsiReadBufferUnsupportedError(sense)
+        return payload
+
+    monkeypatch.setattr(device_version, "_linux_sg_io_read", _fake_sg_io_read)
+
+    profile = {}
+    info = device_version.query_device_version(
+        0x0984,
+        0x1408,
+        "000000000014",
+        device_path="/dev/sda",
+        profile=profile,
+    )
+
+    assert info.raw_data == payload
+    assert info.scb_part_number == "21-0010"
+    assert info.bridge_fw == "040F"
+    assert len(calls[0]) == 10
+    assert len(calls[1]) == 16
+    assert profile["transport"] == "linux_sg_io_ata_read_buffer_dma"
+    assert profile["linux_read_buffer_rejected"] == "illegal_request_invalid_command"
 
 
 def test_linux_scan_hides_version_fields_when_bridge_mismatches_bcd():

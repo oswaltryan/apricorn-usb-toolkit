@@ -17,7 +17,7 @@ from ..constants import EXCLUDED_PIDS
 from ..device_config import closest_values
 from ..models import UsbDeviceInfo
 from ..services import populate_device_version, prune_hidden_version_fields
-from ..utils import bytes_to_gb, find_closest, parse_usb_version
+from ..utils import bytes_to_gb, find_closest, is_oob_mode_size_gb, parse_usb_version
 from .base import AbstractBackend
 
 _usb_module: Any | None = None
@@ -1547,9 +1547,10 @@ class WindowsBackend(AbstractBackend):
                         break
 
             size_raw = wmi_usb_drives[i]["size_gb"]
+            is_oob_size = size_raw == 0.0 or is_oob_mode_size_gb(size_raw)
             size_gb = (
                 "N/A (OOB Mode)"
-                if size_raw == 0.0
+                if is_oob_size
                 else find_closest(size_raw, closest_values[pid][1])
             )
             drive_letter = "Not Formatted"
@@ -1603,7 +1604,7 @@ class WindowsBackend(AbstractBackend):
             if include_drive_letter:
                 drive_letter = drive_letters_map.get(drive_num, "Not Formatted")
                 if (
-                    size_raw != 0.0
+                    not is_oob_size
                     and isinstance(drive_num, int)
                     and drive_num >= 0
                     and drive_letter == "Not Formatted"
@@ -1648,7 +1649,7 @@ class WindowsBackend(AbstractBackend):
                     f"index={i + 1} "
                     f"serial={serial} "
                     f"drive_num={drive_num} "
-                    f"size_mode={'oob' if size_raw == 0.0 else 'mounted_media'} "
+                    f"size_mode={'oob' if is_oob_size else 'mounted_media'} "
                     f"total_ms={(time.perf_counter() - device_start) * 1000.0:.2f}",
                     file=sys.stderr,
                 )

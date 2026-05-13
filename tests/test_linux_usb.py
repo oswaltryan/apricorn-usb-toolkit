@@ -155,6 +155,116 @@ def test_scan_devices_populates_driver_transport_from_probe_result():
     assert serialized["readOnly"] is False
 
 
+def test_scan_devices_treats_500k_media_size_as_oob():
+    backend = LinuxBackend()
+    with (
+        patch.object(
+            LinuxBackend,
+            "_list_usb_drives",
+            return_value=[
+                {
+                    "name": "/dev/sdb",
+                    "serial": "SERIAL123",
+                    "size_gb": backend.parse_lsblk_size("500K"),
+                    "mediaType": "Basic Disk",
+                    "readOnly": False,
+                }
+            ],
+        ),
+        patch.object(
+            LinuxBackend,
+            "_probe_block_devices",
+            return_value={
+                "/dev/sdb": _LinuxBlockDeviceProbe(
+                    block_device="/dev/sdb",
+                    serial="SERIAL123",
+                    driver_transport="BOT",
+                )
+            },
+        ),
+        patch.object(
+            LinuxBackend,
+            "_resolve_probe_controllers",
+            return_value={"/dev/sdb": "Intel"},
+        ),
+        patch.object(
+            LinuxBackend,
+            "_get_lsusb_details",
+            return_value={
+                "SERIAL123": {
+                    "idVendor": "0984",
+                    "idProduct": "0310",
+                    "bcdUSB": "3.0",
+                    "bcdDevice": "0300",
+                    "iManufacturer": "Apricorn",
+                    "iProduct": "Aegis Padlock 3.0",
+                }
+            },
+        ),
+        patch("usb_tool.backend.linux.populate_device_version", return_value={}),
+    ):
+        devices = backend.scan_devices()
+
+    assert len(devices) == 1
+    assert devices[0].driveSizeGB == "N/A (OOB Mode)"
+
+
+def test_scan_devices_uses_sysfs_descriptors_when_lsusb_details_missing():
+    backend = LinuxBackend()
+    with (
+        patch.object(
+            LinuxBackend,
+            "_list_usb_drives",
+            return_value=[
+                {
+                    "name": "/dev/sdb",
+                    "serial": "SERIAL123",
+                    "size_gb": backend.parse_lsblk_size("500K"),
+                    "mediaType": "Basic Disk",
+                    "readOnly": False,
+                }
+            ],
+        ),
+        patch.object(
+            LinuxBackend,
+            "_probe_block_devices",
+            return_value={
+                "/dev/sdb": _LinuxBlockDeviceProbe(
+                    block_device="/dev/sdb",
+                    serial="SERIAL123",
+                    driver_transport="BOT",
+                )
+            },
+        ),
+        patch.object(
+            LinuxBackend,
+            "_resolve_probe_controllers",
+            return_value={"/dev/sdb": "Intel"},
+        ),
+        patch.object(LinuxBackend, "_get_lsusb_details", return_value={}),
+        patch.object(
+            LinuxBackend,
+            "_get_sysfs_usb_details",
+            return_value={
+                "idVendor": "0984",
+                "idProduct": "1408",
+                "bcdUSB": "2.10",
+                "bcdDevice": "0902",
+                "iManufacturer": "Apricorn",
+                "iProduct": "Fortress L3",
+                "iSerial": "SERIAL123",
+            },
+        ) as sysfs_details,
+        patch("usb_tool.backend.linux.populate_device_version", return_value={}),
+    ):
+        devices = backend.scan_devices()
+
+    assert len(devices) == 1
+    assert devices[0].idProduct == "1408"
+    assert devices[0].driveSizeGB == "N/A (OOB Mode)"
+    sysfs_details.assert_called_once_with("/dev/sdb")
+
+
 def test_scan_devices_uses_probe_serial_when_lsblk_serial_missing():
     with (
         patch.object(

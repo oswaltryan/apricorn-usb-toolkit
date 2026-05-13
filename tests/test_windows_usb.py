@@ -19,6 +19,7 @@ from usb_tool.backend.windows import (
     _normalize_disk_media_type,
     _normalize_logical_disk_identifier,
 )
+from usb_tool.utils import bytes_to_gb
 
 
 def _extract_profile_json(stderr_text: str, prefix: str) -> dict[str, object]:
@@ -233,6 +234,60 @@ def test_instantiate_devices_falls_back_to_powershell_for_drive_letter():
         )
 
     assert devices and devices[0].to_dict()["driveLetter"] == "G:"
+
+
+def test_instantiate_devices_treats_500kb_media_size_as_oob():
+    backend = object.__new__(WindowsBackend)
+    backend._profile_scan_enabled = False
+    backend._scan_pass_index = 1
+    wmi_usb_devices = [
+        {
+            "pid": "0310",
+            "vid": "0984",
+            "serial": "SER123",
+            "manufacturer": "Apricorn",
+            "usbDriverProvider": "Apricorn",
+            "usbDriverVersion": "1.2.3.4",
+            "usbDriverInf": "oem17.inf",
+        }
+    ]
+    wmi_usb_drives = [
+        {
+            "size_gb": bytes_to_gb(500 * 1024),
+            "iProduct": "Aegis Padlock 3.0",
+            "mediaType": "Basic Disk",
+            "pnpdeviceid": r"USBSTOR\\DISK&VEN_APRICORN&PROD_PADLOCK\\SER123&0",
+            "diskDriverInfo": {
+                "provider": "Microsoft",
+                "version": "10.0.1",
+                "inf": "disk.inf",
+            },
+        }
+    ]
+    usb_controllers = [{"ControllerName": "Intel"}]
+    libusb_data = [{"bcdUSB": 3.2, "bcdDevice": "0502", "bus_number": 1, "dev_address": 16}]
+    physical_drives = {"SER123": 3}
+
+    with (
+        patch("usb_tool.backend.windows.populate_device_version", return_value={}),
+        patch.object(WindowsBackend, "get_drive_letter_via_ps", return_value="G:") as fallback,
+    ):
+        devices = backend._instantiate_devices(
+            wmi_usb_devices,
+            wmi_usb_drives,
+            usb_controllers,
+            libusb_data,
+            physical_drives,
+            readonly_map={3: False},
+            drive_letters_map={},
+            include_controller=True,
+            include_drive_letter=True,
+        )
+
+    assert len(devices) == 1
+    assert devices[0].driveSizeGB == "N/A (OOB Mode)"
+    assert devices[0].driveLetter == "Not Formatted"
+    fallback.assert_not_called()
 
 
 def test_instantiate_devices_omits_drive_letter_in_minimal_mode():

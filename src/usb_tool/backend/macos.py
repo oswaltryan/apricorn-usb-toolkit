@@ -13,7 +13,7 @@ from ..constants import EXCLUDED_PIDS
 from ..device_config import closest_values
 from ..models import UsbDeviceInfo
 from ..services import populate_device_version, prune_hidden_version_fields
-from ..utils import bytes_to_gb, find_closest
+from ..utils import bytes_to_gb, find_closest, is_oob_mode_size_bytes
 from .base import AbstractBackend
 
 
@@ -176,12 +176,15 @@ class MacOSBackend(AbstractBackend):
 
             if "Media" in drive and drive["Media"]:
                 m = drive["Media"][0]
-                size_raw = bytes_to_gb(m.get("size_in_bytes", 0))
-                closest = find_closest(size_raw, closest_values.get(pid, (0, []))[1])
-                size_gb = str(closest) if closest is not None else "0"
                 media_type = _classify_media_type(m.get("removable_media"))
                 bsd_name = m.get("bsd_name", "")
                 block_device = _normalize_whole_disk_path(bsd_name)
+                if is_oob_mode_size_bytes(m.get("size_in_bytes", 0)):
+                    size_gb = "N/A (OOB Mode)"
+                else:
+                    size_raw = bytes_to_gb(m.get("size_in_bytes", 0))
+                    closest = find_closest(size_raw, closest_values.get(pid, (0, []))[1])
+                    size_gb = str(closest) if closest is not None else "0"
             else:
                 size_gb = "N/A (OOB Mode)"
 

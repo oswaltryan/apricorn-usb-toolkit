@@ -267,6 +267,30 @@ def test_scan_devices_normalizes_partition_to_whole_disk_path():
     assert result[0].to_dict()["blockDevice"] == "/dev/disk4"
 
 
+def test_scan_devices_treats_500kb_media_size_as_oob():
+    drives = [
+        {
+            "_name": "Aegis Padlock 3.0",
+            "manufacturer": "Apricorn",
+            "vendor_id": "0x0984",
+            "product_id": "0x0310",
+            "serial_num": "GOOD1",
+            "bcd_device": "3.00",
+            "Media": [{"size_in_bytes": 500 * 1024, "bsd_name": "disk4"}],
+        }
+    ]
+
+    with (
+        patch.object(MacOSBackend, "_list_usb_drives", return_value=drives),
+        patch.object(MacOSBackend, "_parse_uasp_info", return_value={}),
+        patch("usb_tool.backend.macos.populate_device_version", return_value={}),
+    ):
+        result = MacOSBackend().scan_devices()
+
+    assert len(result) == 1
+    assert result[0].driveSizeGB == "N/A (OOB Mode)"
+
+
 def test_scan_devices_uses_diskutil_media_type_when_profiler_omits_it():
     drives = [
         {

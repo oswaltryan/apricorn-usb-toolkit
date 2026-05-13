@@ -1,13 +1,31 @@
 # -*- mode: python ; coding: utf-8 -*-
 import glob
 import os
+import site
 import sys
+import sysconfig
 
 block_cipher = None
 
 SPEC_DIR = os.path.abspath(os.path.dirname(sys.argv[0])) if sys.argv else os.path.abspath(".")
 ICON_PATH = os.path.join(SPEC_DIR, "USBTool.ico")
-SITE_PACKAGES = os.path.abspath(os.path.join(SPEC_DIR, "..", ".venv_build", "Lib", "site-packages"))
+
+
+def _site_packages_dir() -> str:
+    candidates = []
+    paths = sysconfig.get_paths()
+    for key in ("purelib", "platlib"):
+        path = paths.get(key)
+        if path:
+            candidates.append(path)
+    candidates.extend(site.getsitepackages())
+    for candidate in candidates:
+        if candidate and os.path.isdir(candidate):
+            return os.path.abspath(candidate)
+    raise FileNotFoundError("Unable to locate active Python site-packages directory")
+
+
+SITE_PACKAGES = _site_packages_dir()
 
 
 def _dist_info_dir(dist_name: str) -> str:

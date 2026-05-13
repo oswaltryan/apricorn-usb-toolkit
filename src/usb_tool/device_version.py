@@ -18,7 +18,9 @@ def _build_read_buffer_cdb() -> bytes:
 
 def _build_ata_read_buffer_dma_passthrough_cdb() -> bytes:
     # SCSI ATA PASS-THROUGH(16) carrying ATA READ BUFFER DMA - 0xE9.
-    return bytes([0x85, 0x0C, 0x0E, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0xE9, 0])
+    return bytes(
+        [0x85, 0x15, 0x0E, 0x0, 0x20, 0x0, 0x01, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xE0, 0xFE, 0x0]
+    )
 
 
 def _is_illegal_request_invalid_command(sense: bytes) -> bool:

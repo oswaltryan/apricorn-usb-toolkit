@@ -48,6 +48,7 @@ a = Analysis(
             ),
             "libusb\\_platform\\windows\\x86_64",
         ),
+        ('..\\utils\\windows_native_scan.exe', '.'),
         ('..\\pyproject.toml', '.'),
     ],
     hiddenimports=[

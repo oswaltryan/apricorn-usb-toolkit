@@ -1,6 +1,7 @@
 """Unit tests for windows_usb module."""
 
 import json
+import shutil
 import sys
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 if sys.platform != "win32":
     pytest.skip("Windows only tests", allow_module_level=True)
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -56,6 +58,33 @@ def test_get_drive_letter_via_ps_parses_output():
     ):
         backend = WindowsBackend()
         assert backend.get_drive_letter_via_ps(1) == "E:"
+
+
+def test_resolve_native_scan_binary_prefers_pyinstaller_bundle(monkeypatch):
+    repo_root = Path(__file__).resolve().parents[1]
+    temp_root = repo_root / "tests" / "_native_scan_lookup_tmp"
+    if temp_root.exists():
+        shutil.rmtree(temp_root)
+    bundle_dir = temp_root / "bundle"
+    bundle_dir.mkdir(parents=True)
+    bundled_helper = bundle_dir / "windows_native_scan.exe"
+    bundled_helper.write_bytes(b"helper")
+
+    cwd_dir = temp_root / "cwd"
+    cwd_utils = cwd_dir / "utils"
+    cwd_utils.mkdir(parents=True)
+    (cwd_utils / "windows_native_scan.exe").write_bytes(b"cwd helper")
+
+    try:
+        monkeypatch.setattr(sys, "_MEIPASS", str(bundle_dir), raising=False)
+        monkeypatch.chdir(cwd_dir)
+
+        backend = object.__new__(WindowsBackend)
+
+        assert Path(backend._resolve_native_scan_binary()) == bundled_helper
+    finally:
+        monkeypatch.chdir(repo_root)
+        shutil.rmtree(temp_root)
 
 
 def test_get_wmi_usb_devices_skips_excluded_pids():

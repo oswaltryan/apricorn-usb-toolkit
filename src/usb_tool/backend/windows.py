@@ -339,13 +339,16 @@ class WindowsBackend(AbstractBackend):
     def _resolve_native_scan_binary(self) -> Path | None:
         candidates: list[Path] = []
         repo_root = Path(__file__).resolve().parents[3]
+        pyinstaller_bundle_dir = getattr(sys, "_MEIPASS", None)
+        if pyinstaller_bundle_dir:
+            candidates.append(Path(pyinstaller_bundle_dir) / "windows_native_scan.exe")
         candidates.extend(
             [
                 repo_root / "utils" / "windows_native_scan.exe",
                 repo_root / "windows_native_scan.exe",
+                Path(sys.executable).resolve().parent / "windows_native_scan.exe",
                 Path.cwd() / "utils" / "windows_native_scan.exe",
                 Path.cwd() / "windows_native_scan.exe",
-                Path(sys.executable).resolve().parent / "windows_native_scan.exe",
             ]
         )
 
